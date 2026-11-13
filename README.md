@@ -24,10 +24,12 @@ revealed it, so keys went into a `GtkText` that wasn't in the widget tree.
 Nothing to see, nothing to edit. And with nothing holding the focus, backspace
 fell through to `slot.up` and navigated up instead of deleting a character.
 
-This uses its own `GtkSearchEntry` and gives it the focus on the first
-keystroke, which is what makes backspace work: a focused `GtkText` takes the key
-before the window gets to managed shortcuts, same as in the Ctrl+L location bar.
-The backspace patch needed no changes.
+This uses its own entry, which never takes the focus. Since GTK 4.24,
+`gtk_editable_set_input_interceptor()` runs the entry's input method on the view
+itself, so what you type lands in the entry while the view keeps every key it
+had. Backspace is the one exception: the window resolves `slot.up` in the bubble
+phase, so a capture-phase controller on the view claims Backspace first while
+the entry is up. The backspace patch needed no changes.
 
 Matching was wrong for non-ASCII names. The old code called
 `g_utf8_casefold (name, text_len)`, passing the query's length in *bytes* as the
@@ -58,14 +60,21 @@ an unpatched build.
 
 ## Keys
 
-Up/Down and Ctrl+G / Ctrl+Shift+G walk the matches, Enter opens, Escape closes
-and keeps the selection. Backspacing to an empty query closes it too, otherwise
-the entry keeps the focus and the arrow keys can't reach the list. It gives up
-after five seconds of nothing, which is what the GTK 3 tree view used.
+Ctrl+G and Ctrl+Shift+G step between matches, Escape closes and keeps the
+selection, Backspace deletes a character and closes the entry once the query is
+empty, so a second one goes up a folder as usual.
+
+The view keeps the focus the whole time, so arrows, Home/End, Page Up/Down and
+Enter do exactly what they do without a query. They also close the entry: once
+the cursor has moved, the query no longer describes what's selected, and leaving
+it on screen would only lie about it.
+
+It gives up after five seconds of nothing, which is what the GTK 3 tree view
+used.
 
 ## Notes for rebasing
 
-All the logic is in `src/nautilus-typeahead.c`. Of 556 added lines, 505 are that
+All the logic is in `src/nautilus-typeahead.c`. Of 588 added lines, 537 are that
 file and its header; existing files take the other 51, spread over 8 of them,
 and nothing is deleted or rewritten.
 
@@ -75,11 +84,11 @@ and nothing is deleted or rewritten.
 breaks the build loudly. `find_match_position()` is the only thing that cares
 how `NautilusViewModel` is layered.
 
-GTK 4.24 is a hard floor: `GtkEditable::input-intercepted` is new in it, and
-`gtk_search_entry_set_key_capture_widget()` only hands the entry's `GtkIMContext`
-to the capture widget from 4.24 on, which is what makes dead keys work before
-the entry has the focus. A GTK release that reworks that could leave this
-compiling but misbehaving.
+GTK 4.24 is a hard floor: `gtk_editable_set_input_interceptor()` and
+`GtkEditable::input-intercepted` are both new in it, and between them they are
+what puts typed text in the entry, dead keys included, without the focus ever
+moving. A GTK release that reworks them could leave this compiling but
+misbehaving.
 
 `nautilus/` holds the patch as one commit on the `typeahead` branch.
 `git format-patch --no-signature --start-number 2 -o ../patches 51.1..typeahead`
@@ -87,13 +96,10 @@ regenerates `0002`, then `updpkgsums`.
 
 ## Known limitations
 
-While the entry is open the arrow keys belong to it: Up/Down walk the matches,
-Left/Right move the text cursor. Stepping through items one at a time isn't
-available until Escape, which shows up most in grid view, where Left/Right are
-the usual way to move. GTK 3's tree view search bound Up/Down the same way.
-
-Space can't start a query, because GTK's interceptor skips it. Once the entry is
-open, space types normally.
+A query can't contain a space. Nautilus binds Space on the files view to
+`view.preview-selection`, through a capture-phase shortcut put there on purpose
+to beat the list item's own binding, so taking it for the query would cost you
+the preview. Upstream's Ctrl+F entry drops Space for the same reason.
 
 If nothing starts with what you typed it falls back to a substring match, so
 `report` finds `2024-report.pdf`. Prefix always wins, so it only applies where

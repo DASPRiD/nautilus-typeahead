@@ -1,0 +1,11 @@
+# Upstream work tree the series is developed against
+nautilus/
+
+# flatpak build output and state
+build/
+
+# Generated test fixtures
+testdata/
+
+# Working notes, not part of the handoff
+notes/
